@@ -1,0 +1,179 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <title>Interactive 3D Radio</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <style>
+    html,body{margin:0;height:100%;overflow:hidden;background:#101010;font:13px/1.5 system-ui}
+    #hud{position:fixed;left:10px;top:10px;z-index:10;max-width:70vw;
+         background:rgba(0,0,0,.55);color:#aaffaa;padding:6px 10px;border-radius:6px;white-space:pre-wrap}
+  </style>
+
+  <script src="./source/Tone.js"></script>
+  <link rel="preload" as="audio" href="./source/likerainlikemusic.mp3">
+
+  <script type="importmap">
+  { "imports": {
+      "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+      "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+  } }
+  </script>
+</head>
+<body>
+  <div id="hud">로딩 중… (ESC = 홈)</div>
+
+  <script type="module">
+    import * as THREE from 'three';
+    import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+    import { GLTFLoader }    from 'three/addons/loaders/GLTFLoader.js';
+    import { DRACOLoader }   from 'three/addons/loaders/DRACOLoader.js';
+    import { RGBELoader }    from 'three/addons/loaders/RGBELoader.js';
+
+    const hud = document.getElementById('hud');
+    const say = (m, ok=true)=>{ hud.textContent=m; hud.style.color = ok ? '#aaffaa' : '#ff7f7f'; };
+
+    const renderer = new THREE.WebGLRenderer({ antialias:true });
+    renderer.setSize(innerWidth, innerHeight);
+    renderer.outputColorSpace = THREE.SRGBColorSpace;
+    renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    renderer.shadowMap.enabled = true;
+    document.body.appendChild(renderer.domElement);
+
+    const scene = new THREE.Scene();
+    const camera = new THREE.PerspectiveCamera(60, innerWidth/innerHeight, 0.01, 5000);
+    const controls = new OrbitControls(camera, renderer.domElement);
+    controls.enableDamping = true;
+    controls.autoRotate = true;
+    controls.autoRotateSpeed = 0.5;
+    controls.enablePan = false;
+
+    scene.add(new THREE.AmbientLight(0xffffff, 1.3));
+    const key = new THREE.DirectionalLight(0xffffff, 2);
+    key.position.set(5,5,5);
+    key.castShadow = true;
+    scene.add(key);
+
+    new RGBELoader().load(
+      'https://dl.polyhaven.org/file/ph-assets/HDRIs/hdr/1k/fireplace_1k.hdr',
+      (hdr)=>{ hdr.mapping = THREE.EquirectangularReflectionMapping;
+               scene.environment = hdr; scene.background = hdr; }
+    );
+
+    function supportY(root){
+      const ys=[];
+      root.traverse(o=>{
+        if(!o.isMesh) return;
+        const n=(o.name||'').toLowerCase();
+        if(/wire|cord|cable|string|line/.test(n)) return;
+        const b=new THREE.Box3().setFromObject(o);
+        if(b.isEmpty()) return;
+        const s=b.getSize(new THREE.Vector3());
+        if(s.x*s.z<1e-5) return;
+        ys.push(b.min.y);
+      });
+      if(!ys.length) return new THREE.Box3().setFromObject(root).min.y;
+      ys.sort((a,b)=>a-b);
+      return ys[Math.floor(ys.length*0.2)];
+    }
+
+    const loader = new GLTFLoader();
+    const draco  = new DRACOLoader().setDecoderPath('https://unpkg.com/three@0.160.0/examples/jsm/libs/draco/');
+    loader.setDRACOLoader(draco);
+
+    say('라디오 모델 로드 중…');
+
+    loader.load('./source/oldradio.glb', (gltf)=>{
+      const model = gltf.scene;
+      model.traverse(o=>{ if(o.isMesh){ o.castShadow=o.receiveShadow=true; }});
+      scene.add(model);
+
+      let box = new THREE.Box3().setFromObject(model);
+      const size = box.getSize(new THREE.Vector3());
+      const M = Math.max(size.x,size.y,size.z) || 1;
+      if(M<0.2 || M>20) model.scale.setScalar(2/M);
+
+      box = new THREE.Box3().setFromObject(model);
+      const c = box.getCenter(new THREE.Vector3());
+      const max2 = Math.max(...box.getSize(new THREE.Vector3()).toArray());
+      const thick = max2*0.04;
+      const W = max2*1.4, D = max2*1.0;
+
+      const table = new THREE.Mesh(
+        new THREE.BoxGeometry(W, thick, D),
+        new THREE.MeshStandardMaterial({ color:0x7b5a43, roughness:0.75 })
+      );
+      table.castShadow = table.receiveShadow = true;
+      table.position.set(c.x, box.min.y - thick/2, c.z);
+      scene.add(table);
+
+      // 스피커를 테이블 상판에 딱 붙이기
+      const ySupport = supportY(model);
+      const tableTop = table.position.y + thick/2;
+      model.position.y += (tableTop - ySupport);
+
+      // ── 바닥면(조금 더 여유있게 설정하기) ──
+      const b2 = new THREE.Box3().setFromObject(model);
+      const L  = Math.max(...b2.getSize(new THREE.Vector3()).toArray()); // 장면 스케일 기준
+      const floorY = table.position.y - thick/2 - L*0.01;                // 상판 바로 아래
+
+      
+      const floor = new THREE.Mesh(
+        new THREE.PlaneGeometry(W*1.10, D*1.10),  // 테이블보다 10%만 큼
+        new THREE.MeshStandardMaterial({ color:0x1a1a1a, roughness:1.0 })
+      );
+      floor.rotation.x = -Math.PI/2;
+      floor.position.set(c.x, floorY, c.z);
+      floor.receiveShadow = true;
+      scene.add(floor);
+
+      const shadowCatcher = new THREE.Mesh(
+        new THREE.PlaneGeometry(W*1.10, D*1.10),
+        new THREE.ShadowMaterial({ opacity:0.35 })
+      );
+      shadowCatcher.rotation.x = -Math.PI/2;
+      shadowCatcher.position.set(c.x, floorY + 0.001, c.z);
+      shadowCatcher.receiveShadow = true;
+      scene.add(shadowCatcher);
+
+      const center = b2.getCenter(new THREE.Vector3());
+      controls.target.set(center.x, tableTop + L*0.15, center.z);
+      const dist = L / (2 * Math.tan(THREE.MathUtils.degToRad(camera.fov*0.5)));
+      camera.position.set(center.x, tableTop + L*0.45, center.z + dist*1.35);
+      camera.near = Math.max(0.01, L/100); camera.far = Math.max(100, L*20);
+      camera.updateProjectionMatrix();
+
+      say('클릭하면 음악 재생!');
+    },
+    (xhr)=>{ if(xhr.total) say(`로딩 중… ${Math.round(xhr.loaded/xhr.total*100)}%`); },
+    (err)=> say('모델 로드 실패: '+(err?.message||err), false));
+
+    // 오디오 로딩 실패시 HTMLAudio로 로딩
+    const MUSIC = new URL('./source/likerainlikemusic.mp3', location.href).href;
+    let player; const htmlAudio = new Audio(MUSIC); htmlAudio.loop = true;
+    let playing = false;
+
+    async function play(){
+      try{
+        await Tone.start();
+        if(!player){ player = new Tone.Player({ url:MUSIC, loop:true }).toDestination(); await Tone.loaded(); }
+        player.start(); playing = true; say('🎶 재생 중 (클릭=정지, ESC=홈)');
+      }catch{
+        await htmlAudio.play(); playing = true; say('🎧 HTMLAudio 재생 중 (클릭=정지, ESC=홈)');
+      }
+    }
+    function stop(){ if(player) player.stop(); if(!htmlAudio.paused) htmlAudio.pause(); playing=false; say('⏹ 정지 (클릭=재생, ESC=홈)'); }
+
+    addEventListener('pointerdown', ()=> playing ? stop() : play(), { passive:true });
+    addEventListener('keydown', e=>{ if(e.key==='Escape') location.href='./index.html'; });
+
+    addEventListener('resize', ()=>{
+      renderer.setSize(innerWidth, innerHeight);
+      camera.aspect = innerWidth/innerHeight;
+      camera.updateProjectionMatrix();
+    });
+
+    (function loop(){ requestAnimationFrame(loop); controls.update(); renderer.render(scene,camera); })();
+  </script>
+</body>
+</html>

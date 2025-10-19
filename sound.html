@@ -1,0 +1,209 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>SONICTRACE • Waveform + Peak Burst</title>
+  <style>
+    html,body{margin:0;height:100%;background:#0a0b0e;overflow:hidden;font:14px/1.5 system-ui}
+    #overlay{
+      position:fixed;inset:0;display:grid;place-items:center;
+      background:rgba(0,0,0,.65);color:#cfe9ff;z-index:10;text-align:center;padding:24px
+    }
+    #overlay button{
+      margin-top:14px;padding:10px 16px;border-radius:10px;border:1px solid #2b3a52;
+      background:rgba(17,20,28,.85);color:#cfe9ff;letter-spacing:.06em;cursor:pointer
+    }
+    #hud{
+      position:fixed;left:10px;top:10px;z-index:5;color:#a7b0c0;font-size:12px;
+      background:rgba(0,0,0,.35);padding:6px 10px;border-radius:8px;white-space:pre
+    }
+  </style>
+
+  <script src="https://cdn.jsdelivr.net/npm/p5@1.9.0/lib/p5.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/p5@1.9.0/lib/addons/p5.sound.min.js"></script>
+</head>
+<body>
+  <div id="overlay">
+    <div>
+      <div>탭/클릭하여 오디오를 시작하세요</div>
+      <button id="startBtn">시작</button>
+      <div style="margin-top:10px;font-size:12px;opacity:.8">M: 마이크/파일 토글 · P: 재생/일시정지 · ESC: 홈</div>
+    </div>
+  </div>
+  <div id="hud">mode: file (likerainlikemusic.mp3)</div>
+
+<script>
+  // ── 설정
+  const FILE_URL       = './source/likerainlikemusic.mp3';
+  const PEAK_MARGIN    = 0.03;  // 민감도 여유 
+  const PEAK_COOLDOWN  = 120;   // 프레임 딜레이
+  const BURST_COUNT    = 120;   // 파티클 수
+  const RING_LIFE      = 42;    // 프레임 설정
+  const SHAKE_STRENGTH = 6;
+
+  let mode='file', snd, mic, fft, amp, isPlaying=false;
+
+  let env=0, lastPeakFrame=-999;
+  const ENV_ATTACK=0.2, ENV_RELEASE=0.02;
+
+  const particles=[]; 
+  const rings=[];     
+  let flash=0, shakeT=0;
+
+  function setup(){
+    createCanvas(windowWidth, windowHeight);
+    pixelDensity(Math.min(2, window.devicePixelRatio || 1));
+    fft = new p5.FFT(0.8, 2048);
+    amp = new p5.Amplitude(0.9);
+    snd = loadSound(FILE_URL, updateHud, ()=>select('#hud').html('음원 로드 실패. M 으로 마이크 사용'));
+
+    mic = new p5.AudioIn();
+  }
+  function windowResized(){ resizeCanvas(windowWidth, windowHeight); }
+
+  async function beginAudio(){
+    try{
+      userStartAudio();
+      if(mode==='file'){
+        if(snd && !snd.isPlaying()){ snd.loop(); isPlaying=true; }
+        fft.setInput(snd); amp.setInput(snd);
+      }else{
+        if(!mic.enabled) await mic.start();
+        fft.setInput(mic); amp.setInput(mic); isPlaying=true;
+      }
+      select('#overlay')?.remove();
+      updateHud();
+    }catch(e){ alert('오디오 시작 실패: '+e.message); }
+  }
+
+  function keyPressed(){
+    if(key==='m' || key==='M'){ 
+      if(mode==='file'){ snd?.stop(); mode='mic'; }
+      else { mic?.stop(); mode='file'; }
+      isPlaying=false; beginAudio();
+    }
+    if(key==='p' || key==='P'){ 
+      if(mode==='file' && snd){
+        snd.isPlaying() ? snd.pause() : snd.loop();
+        isPlaying = snd.isPlaying();
+        updateHud();
+      }
+    }
+    if(keyCode===27){ location.href='./index.html'; } 
+  }
+
+  function updateHud(){
+    const s = (mode==='file')
+      ? (snd?.isPlaying() ? 'playing' : 'paused')
+      : (mic?.enabled ? 'live' : 'off');
+    select('#hud').html(`mode: ${mode}${mode==='file'?' (likerainlikemusic.mp3)':''}\nstate: ${s}\nM: mic/file · P: play/pause · ESC: home`);
+  }
+
+  function draw(){
+    drawBackground();
+
+    if(!isPlaying) return;
+
+    const wave = fft.waveform();
+    const midY = height * 0.55;
+    const ampH = height * 0.28;
+
+    let ox=0, oy=0;
+    if(shakeT>0){
+      ox = (noise(frameCount*0.9)-0.5)*SHAKE_STRENGTH;
+      oy = (noise(1000+frameCount*0.85)-0.5)*SHAKE_STRENGTH;
+      shakeT--;
+    }
+    push(); translate(ox, oy);
+
+    // 파형
+    noFill();
+    stroke(207,233,255,200); strokeWeight(2);
+    beginShape();
+    for(let i=0;i<wave.length;i++){
+      const x = map(i,0,wave.length-1,0,width);
+      const y = midY + wave[i]*ampH;
+      curveVertex(x,y);
+    }
+    endShape();
+
+    stroke(199,255,122,120); strokeWeight(1);
+    beginShape();
+    for(let i=0;i<wave.length;i++){
+      const x = map(i,0,wave.length-1,0,width);
+      const y = midY - wave[i]*ampH*0.5;
+      curveVertex(x,y);
+    }
+    endShape();
+
+    strokeWeight(1);
+    stroke(255,255,255, 120 + 60*sin(frameCount*0.05));
+    line(0, midY, width, midY);
+
+
+    const level = amp.getLevel();
+    env += (level-env) * (level>env ? ENV_ATTACK : ENV_RELEASE);
+    if(level > env + PEAK_MARGIN && frameCount - lastPeakFrame > PEAK_COOLDOWN){
+      lastPeakFrame = frameCount;
+      triggerBurst(midY);
+    }
+
+    renderEffects(midY);
+
+    if(flash>0){
+      noStroke(); fill(255,255,255, 255*flash);
+      rect(0,0,width,height); flash*=0.85;
+    }
+    pop();
+  }
+
+  function triggerBurst(midY){
+    const cx = random(width*0.2, width*0.8);
+    const cy = midY + random(-10,10);
+    rings.push({x:cx, y:cy, age:0});
+
+    for(let i=0;i<BURST_COUNT;i++){
+      const a=random(TWO_PI), s=random(2,6);
+      particles.push({
+        x:cx, y:cy, vx:cos(a)*s, vy:sin(a)*s - random(0,1.2),
+        life: random(28,60), hue: random([180,120,90])
+      });
+    }
+    flash = 0.25; shakeT = 16;
+  }
+
+  function renderEffects(){
+
+    for(let i=particles.length-1;i>=0;i--){
+      const p=particles[i];
+      p.x+=p.vx; p.y+=p.vy; p.vy+=0.08;
+      p.vx*=0.99; p.vy*=0.99; p.life--;
+      const a = map(p.life, 0, 60, 0, 1);
+      strokeWeight(1.6);
+      stroke(color(`hsla(${p.hue},90%,70%,${a})`)); point(p.x,p.y);
+      if(p.life<=0 || p.y>height+40) particles.splice(i,1);
+    }
+    
+    for(let i=rings.length-1;i>=0;i--){
+      const r=rings[i]; r.age++;
+      const t=r.age/RING_LIFE, rad=20+t*240, alpha=(1-t)*140;
+      noFill(); stroke(199,255,122,alpha); strokeWeight(2); circle(r.x,r.y,rad*2);
+      if(r.age>=RING_LIFE) rings.splice(i,1);
+    }
+  }
+
+  function drawBackground(){
+    const g1 = color(10,11,14), g2=color(18,20,28);
+    for(let y=0;y<height;y++){
+      const t=y/height; stroke( lerpColor(g1,g2,t) ); line(0,y,width,y);
+    }
+    noFill(); drawingContext.save();
+    drawingContext.shadowBlur=60; drawingContext.shadowColor='rgba(0,0,0,.8)';
+    rect(-30,-30,width+60,height+60); drawingContext.restore();
+  }
+
+  document.getElementById('startBtn').addEventListener('click', beginAudio);
+</script>
+</body>
+</html>
