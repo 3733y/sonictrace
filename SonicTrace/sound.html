@@ -1,0 +1,118 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <title>Sound Reactive Visual</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <style>
+    html,body{margin:0;height:100%;background:#0d0f12;overflow:hidden}
+    #ui{position:fixed;left:12px;top:12px;display:flex;gap:8px;z-index:10}
+    button{background:#111;border:1px solid #444;color:#cfe9ff;padding:8px 10px;border-radius:8px;cursor:pointer}
+    button:disabled{opacity:.5;cursor:not-allowed}
+    #hint{position:fixed;left:12px;bottom:12px;color:#9aa7b8;font:12px/1.4 system-ui}
+  </style>
+
+  <!-- p5.js + p5.sound (CDN) -->
+  <script src="https://cdn.jsdelivr.net/npm/p5@1.9.0/lib/p5.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/p5@1.9.0/lib/addons/p5.sound.min.js"></script>
+
+  <!-- (선택) 기존 음악 재생용: Tone 없이 HTMLAudio로 -->
+  <link rel="preload" as="audio" href="./source/likerainlikemusic.mp3">
+</head>
+<body>
+  <div id="ui">
+    <button id="micBtn">🎙️ 마이크 시작</button>
+    <button id="trackBtn">🎵 트랙 재생</button>
+    <button id="stopBtn" disabled>⏹ 정지</button>
+  </div>
+  <div id="hint">Tip: 마이크는 HTTPS나 로컬(127.0.0.1)에서만 권한이 열립니다.</div>
+
+  <script>
+    // 상태 변수
+    let mic, fft, audio;
+    let usingMic = false, usingTrack = false;
+
+    // p5 스케치
+    function setup(){
+      createCanvas(window.innerWidth, window.innerHeight);
+      noStroke();
+      colorMode(HSB, 360, 100, 100, 100);
+      fft = new p5.FFT(0.8, 64); // 스무딩, 빈 수
+    }
+
+    function windowResized(){
+      resizeCanvas(window.innerWidth, window.innerHeight);
+    }
+
+    function draw(){
+      background(218, 30, 8); // 어두운 남청색
+
+      // 스펙트럼 가져오기
+      const spectrum = fft.analyze();
+
+      // 막대 그래프
+      const n = spectrum.length;
+      const w = width / n;
+      for (let i=0; i<n; i++){
+        const amp = spectrum[i];               // 0~255
+        const h = map(amp, 0, 255, 0, height); // 높이
+        const hue = map(i, 0, n-1, 190, 340);  // 청록→보라
+        fill(hue, 80, map(amp, 0,255, 30, 95), 95);
+        rect(i*w, height-h, w*0.9, h, 4);
+      }
+
+      // 원형 반응 파트 (센터 오브젝트)
+      const level = fft.getEnergy('bass','lowMid','mid')/255; // 0~1
+      push();
+      translate(width/2, height/2);
+      const r = map(level, 0, 1, min(width,height)*0.06, min(width,height)*0.18);
+      fill(210, 60, 95, 85);
+      circle(0,0,r*2);
+      pop();
+    }
+
+    // 입력 소스 세팅
+    async function startMic(){
+      if (usingMic) return;
+      // p5 마이크
+      mic = new p5.AudioIn();
+      await mic.start();        // 권한 요청 (사용자 제스처 이후)
+      fft.setInput(mic);
+      usingMic = true; usingTrack = false;
+      if (audio) { audio.pause(); }
+      updateButtons();
+    }
+
+    function startTrack(){
+      if (usingTrack) return;
+      if (!audio){
+        audio = new Audio(new URL('./source/likerainlikemusic.mp3', location.href));
+        audio.loop = true;
+        audio.crossOrigin = 'anonymous';
+        // p5.sound로 분석하려면 MediaElement를 FFT에 연결
+        const media = new p5.MediaElement(audio);
+        fft.setInput(media);
+      }
+      audio.play();
+      usingTrack = true; usingMic = false;
+      updateButtons();
+    }
+
+    function stopAll(){
+      if (mic) mic.stop();
+      if (audio) audio.pause();
+      usingMic = usingTrack = false;
+      updateButtons();
+    }
+
+    function updateButtons(){
+      document.getElementById('stopBtn').disabled = !(usingMic || usingTrack);
+    }
+
+    // 버튼 핸들러
+    document.getElementById('micBtn').addEventListener('click', startMic);
+    document.getElementById('trackBtn').addEventListener('click', startTrack);
+    document.getElementById('stopBtn').addEventListener('click', stopAll);
+  </script>
+</body>
+</html>
